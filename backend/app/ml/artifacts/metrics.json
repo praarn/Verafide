@@ -1,0 +1,22 @@
+{
+  "classic": {
+    "accuracy": 0.8565,
+    "precision": 0.8536,
+    "recall": 0.8607,
+    "f1": 0.8571,
+    "train_seconds": 0.14,
+    "algorithm": "TF-IDF + Logistic Regression"
+  },
+  "advanced": {
+    "accuracy": 0.8625,
+    "precision": 0.8517,
+    "recall": 0.8779,
+    "f1": 0.8646,
+    "train_seconds": 12.9,
+    "algorithm": "TF-IDF + MLP Neural Network (128,64)"
+  },
+  "dataset_size": 13343,
+  "train_size": 10674,
+  "test_size": 2669,
+  "trained_at": "2026-07-24T05:46:23Z"
+}
