@@ -115,67 +115,107 @@ inference code in `backend/app/ml/inference.py` is written so you can drop
 in a `transformers` pipeline as a third mode later without restructuring
 the API.
 
-## Quick start (local, no Docker)
+## Running the project
 
-### Backend
-```bash
+Pick your OS below and run its commands **in order, top to bottom**. You'll
+end up with two terminals running at once — one for the backend, one for
+the frontend.
+
+---
+
+### Windows (PowerShell)
+
+**1. Backend**
+```powershell
 cd backend
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+py -3.12 -m venv venv
+.\venv\Scripts\Activate.ps1
+python --version                 # confirm this prints Python 3.12.x
 pip install -r requirements.txt
-
-# generate the training data + train both models (only needed once,
-# artifacts are already included in this zip under app/ml/artifacts/)
-python scripts/generate_dataset.py
-python scripts/train_models.py
-
-cp .env.example .env            # edit SECRET_KEY for real deployments
+copy .env.example .env
+# open .env and paste your GROQ_API_KEY (get a free one at https://console.groq.com/keys) — optional but recommended
 uvicorn app.main:app --reload --port 8000
 ```
-API docs: http://localhost:8000/docs
+Leave this terminal running. API docs: http://localhost:8000/docs
 
-### Enabling OCR for scanned PDFs (recommended)
+**2. OCR, for scanned PDFs in Batch Review (optional)**
+```powershell
+# Download + run the installer: https://github.com/UB-Mannheim/tesseract/wiki
+# Then either add the install folder to PATH, or add this line to backend\.env:
+# TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
 
-Batch Review can read scanned/image-only PDF pages (e.g. newspaper scans),
-but this needs the Tesseract OCR engine installed on your machine — it's a
-small, separate binary, not just a pip package:
+**3. Frontend** (open a **new** PowerShell window)
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+App: http://localhost:5173
 
-- **Windows**: install from https://github.com/UB-Mannheim/tesseract/wiki
-  (the `.exe` installer). After installing, make sure the install folder
-  (e.g. `C:\Program Files\Tesseract-OCR`) is on your PATH, or set:
-  ```
-  # in backend/.env, or as a system env var
-  TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-  ```
-- **macOS**: `brew install tesseract`
-- **Linux**: `sudo apt install tesseract-ocr`
+---
 
-Without Tesseract installed, everything else still works — regular
-(non-scanned) PDFs, CSVs, text, and URLs are unaffected. Scanned pages will
-just be reported as "unreadable" in the extraction summary instead of
-being OCR'd, with a clear message pointing back to this section.
+### macOS
 
-### Enabling the summarizer + chatbot (optional but recommended)
+**1. Backend**
+```bash
+cd backend
+python3.12 -m venv venv
+source venv/bin/activate
+python --version                 # confirm this prints Python 3.12.x
+pip install -r requirements.txt
+cp .env.example .env
+# open .env and paste your GROQ_API_KEY (get a free one at https://console.groq.com/keys) — optional but recommended
+uvicorn app.main:app --reload --port 8000
+```
+Leave this terminal running. API docs: http://localhost:8000/docs
 
-1. Get a free API key at https://console.groq.com/keys
-2. Open `backend/.env` and set:
-   ```
-   GROQ_API_KEY=your-actual-key-here
-   ```
-3. Restart uvicorn. That's it — the Summarize/Ask-about-this panel on the
-   Analyze page will start working. Without a key set, those two features
-   return a clear error message instead of crashing; the core detection
-   features work fine either way.
+**2. OCR, for scanned PDFs in Batch Review (optional)**
+```bash
+brew install tesseract
+```
 
-### Frontend
+**3. Frontend** (open a **new** terminal tab/window)
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-App: http://localhost:5173 (proxies `/api` to `http://localhost:8000` in dev)
+App: http://localhost:5173
 
-## Quick start (Docker)
+---
+
+### Linux (Debian/Ubuntu-based)
+
+**1. Backend**
+```bash
+cd backend
+python3.12 -m venv venv
+source venv/bin/activate
+python --version                 # confirm this prints Python 3.12.x
+pip install -r requirements.txt
+cp .env.example .env
+# open .env and paste your GROQ_API_KEY (get a free one at https://console.groq.com/keys) — optional but recommended
+uvicorn app.main:app --reload --port 8000
+```
+Leave this terminal running. API docs: http://localhost:8000/docs
+
+**2. OCR, for scanned PDFs in Batch Review (optional)**
+```bash
+sudo apt update && sudo apt install -y tesseract-ocr
+```
+
+**3. Frontend** (open a **new** terminal tab/window)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+App: http://localhost:5173
+
+---
+
+### Any OS — Docker (single command, no local Python/Node install needed)
 
 ```bash
 docker compose up --build
@@ -183,9 +223,35 @@ docker compose up --build
 - Frontend: http://localhost
 - Backend: http://localhost:8000
 
-Set a real `SECRET_KEY` env var before deploying anywhere public:
+Set a real secret before deploying anywhere public:
 ```bash
+# macOS / Linux
 SECRET_KEY=$(openssl rand -hex 32) docker compose up --build
+```
+```powershell
+# Windows PowerShell
+$env:SECRET_KEY = -join ((48..57 + 97..102) | Get-Random -Count 32 | ForEach-Object {[char]$_})
+docker compose up --build
+```
+
+---
+
+### Optional: retrain the ML models from scratch
+
+The zip already ships with trained model artifacts — skip this unless you
+specifically want to rebuild them (same commands on every OS, run inside
+the activated backend venv):
+
+```bash
+cd backend
+python scripts/generate_dataset.py
+# download the 3 real-world CSVs — curl commands are in each build_*.py docstring
+python scripts/build_real_dataset.py
+python scripts/build_agnews_dataset.py
+python scripts/build_onion_dataset.py
+python scripts/combine_datasets.py
+python scripts/train_models.py
+# then restart uvicorn so it loads the newly trained artifacts
 ```
 
 ## Tech stack
