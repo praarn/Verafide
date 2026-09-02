@@ -3,6 +3,13 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
+from app.config import settings
+
+# Refuse to buffer an unbounded response body — a hostile or misconfigured
+# URL could otherwise stream hundreds of MB into memory before we ever get
+# to parse it. 8 MB of HTML is far more than any real article page.
+MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+
 # A real browser UA + realistic headers. Many news sites serve a stripped,
 # mostly-navigation shell to unrecognized bot user-agents and only render
 # full article markup for browser-like clients — using a generic
@@ -81,13 +88,33 @@ def fetch_article_text(url: str, timeout: int = 12) -> dict:
     <p>-tag sweep, then meta description as a last resort — so genuinely
     short wire-service articles don't get rejected just for being short.
     """
+    if not url.lower().startswith(("http://", "https://")):
+        raise ArticleFetchError("URL must start with http:// or https://")
+
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
-        resp.raise_for_status()
+        resp = requests.get(
+            url, headers=HEADERS, timeout=timeout, allow_redirects=True, stream=True
+        )
     except requests.RequestException as exc:
         raise ArticleFetchError(f"Could not fetch the URL: {exc}") from exc
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    with resp:
+        try:
+            resp.raise_for_status()
+            chunks = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=65536):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    break
+        except requests.RequestException as exc:
+            raise ArticleFetchError(f"Could not fetch the URL: {exc}") from exc
+        raw = b"".join(chunks)
+        encoding = resp.encoding or "utf-8"
+
+    html = raw.decode(encoding, errors="replace")
+    soup = BeautifulSoup(html, "html.parser")
 
     for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form", "noscript"]):
         tag.decompose()
@@ -108,4 +135,4 @@ def fetch_article_text(url: str, timeout: int = 12) -> dict:
             "try pasting the article text directly instead."
         )
 
-    return {"title": title or url, "text": body}
+    return {"title": (title or url)[:500], "text": body[: settings.MAX_TEXT_CHARS]}

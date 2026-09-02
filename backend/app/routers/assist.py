@@ -1,18 +1,23 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.config import settings
 from app.deps import get_current_user
 from app.models import User
-from app.schemas import ChatRequest, ChatResponse, SummarizeRequest, SummarizeResponse
+from app.rag import retrieve
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    Citation,
+    SummarizeRequest,
+    SummarizeResponse,
+)
 from app.services.groq_client import GroqError, chat_completion
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assist", tags=["assist"])
 
-# History retention for chat: each prior turn adds to the token count on
-# every subsequent request, so a long conversation about a large document
-# could creep back toward Groq's rate limit even with the context itself
-# capped. Keeping only the last few turns, each trimmed to a reasonable
-# length, bounds that growth.
 MAX_HISTORY_TURNS = 6
 MAX_HISTORY_MESSAGE_CHARS = 1000
 
@@ -25,17 +30,17 @@ SUMMARY_SYSTEM_PROMPT = (
 
 CHAT_SYSTEM_PROMPT = (
     "You are a helpful assistant embedded in a fake-news-detection tool called Verafide. "
-    "Answer the user's questions using ONLY the article/text provided as context below. "
-    "If the answer isn't contained in the text, say so honestly rather than guessing or "
-    "using outside knowledge. Be concise and factual, and avoid stating a definitive "
-    "real/fake verdict yourself — that's a separate model's job; you're here to help the "
-    "user understand the content itself."
+    "Answer the user's questions using the article/text provided as context. You may also "
+    "use the REFERENCE NOTES (media-literacy guidance) when they help explain a technique "
+    "or pattern, citing them by number. If the answer isn't in the context or references, "
+    "say so honestly rather than guessing. Be concise and factual, and avoid stating a "
+    "definitive real/fake verdict yourself — that's a separate model's job."
 )
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
 def summarize(payload: SummarizeRequest, user: User = Depends(get_current_user)):
-    text = payload.text[:settings.GROQ_MAX_CONTEXT_CHARS]
+    text = payload.text[: settings.GROQ_MAX_CONTEXT_CHARS]
     length_instruction = (
         "Summarize in 2-3 short sentences."
         if payload.length == "short"
@@ -52,19 +57,26 @@ def summarize(payload: SummarizeRequest, user: User = Depends(get_current_user))
         )
     except GroqError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
-
     return SummarizeResponse(summary=summary)
 
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest, user: User = Depends(get_current_user)):
-    context = payload.context[:settings.GROQ_MAX_CONTEXT_CHARS]
-    messages = [
-        {"role": "system", "content": f"{CHAT_SYSTEM_PROMPT}\n\nARTICLE/TEXT:\n{context}"},
-    ]
-    # Replay prior turns so the model has conversational memory (the API
-    # itself is stateless) — trimmed so a long conversation can't slowly
-    # creep the request back over the rate limit.
+    context = payload.context[: settings.GROQ_MAX_CONTEXT_CHARS]
+
+    passages = []
+    if payload.use_rag and settings.RAG_ENABLED:
+        try:
+            passages = retrieve(f"{payload.question}\n{context[:1000]}")
+        except Exception:
+            logger.exception("RAG retrieval failed in chat; continuing without references")
+
+    system = f"{CHAT_SYSTEM_PROMPT}\n\nARTICLE/TEXT:\n{context}"
+    if passages:
+        refs = "\n".join(f"[{i}] ({p['title']}) {p['snippet']}" for i, p in enumerate(passages, 1))
+        system += f"\n\nREFERENCE NOTES:\n{refs}"
+
+    messages = [{"role": "system", "content": system}]
     for turn in payload.history[-MAX_HISTORY_TURNS:]:
         messages.append({"role": turn.role, "content": turn.content[:MAX_HISTORY_MESSAGE_CHARS]})
     messages.append({"role": "user", "content": payload.question})
@@ -74,4 +86,4 @@ def chat(payload: ChatRequest, user: User = Depends(get_current_user)):
     except GroqError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    return ChatResponse(answer=answer)
+    return ChatResponse(answer=answer, citations=[Citation(**p) for p in passages])

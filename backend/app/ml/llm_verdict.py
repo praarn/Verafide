@@ -1,30 +1,33 @@
 import json
+import logging
 import re
 
+from app.config import settings
+from app.rag import retrieve
 from app.services.groq_client import GroqError, chat_completion
 
-# Deliberately honest about what this can and can't do: Groq's hosted models
-# have no internet access or real-time knowledge, so they cannot verify a
-# specific claim against reality. What they CAN do is judge the same kind of
-# surface patterns a careful human reader would — sourcing, tone, internal
-# consistency — but with actual language understanding instead of matching
-# against a fixed training vocabulary (which is the core limitation of the
-# TF-IDF models). This is framed explicitly in the prompt so the model
-# doesn't hallucinate false certainty about facts it has no way to check.
+logger = logging.getLogger(__name__)
+
+# The model has no internet access and cannot verify a specific fact against
+# reality. It CAN judge surface patterns a careful reader would — sourcing,
+# tone, internal consistency — with real language understanding rather than
+# a fixed training vocabulary. When RAG context is supplied, it may also
+# lean on the retrieved media-literacy notes / prior fact-checks. This is
+# stated in the prompt so the model doesn't fabricate false certainty.
 SYSTEM_PROMPT = (
-    "You are a careful media-literacy analyst helping assess whether a piece of text "
-    "shows the hallmarks of credible journalism or fabricated/misleading content. "
-    "You do NOT have internet access or real-time knowledge, so you cannot verify "
-    "specific facts, names, or events against ground truth — never claim to have "
-    "confirmed or debunked a specific real-world fact. Instead, judge based on "
-    "OBSERVABLE PATTERNS in the writing itself: sensationalized or emotionally "
-    "manipulative language, vague or missing sourcing/attribution, logical leaps or "
-    "unsupported claims presented as settled fact, clickbait structure, excessive "
-    "urgency or fear appeals — versus measured tone, specific attributed sourcing, "
-    "and normal journalistic conventions. "
-    "Respond with ONLY a JSON object, no other text, no markdown fences: "
-    '{"label": "real" or "fake", "confidence": a number between 0.0 and 1.0, '
-    '"reasoning": "one or two sentence explanation of the patterns you observed"}'
+    "You are a careful media-literacy analyst assessing whether a piece of text shows "
+    "the hallmarks of credible journalism or fabricated/misleading content. You do NOT "
+    "have internet access or real-time knowledge, so you cannot verify specific facts, "
+    "names, or events — never claim to have confirmed or debunked a specific real-world "
+    "fact. Judge OBSERVABLE PATTERNS: sensationalized or emotionally manipulative "
+    "language, vague or missing sourcing, logical leaps, clickbait structure, fear "
+    "appeals — versus measured tone, specific attributed sourcing, and normal "
+    "journalistic conventions. If reference notes are provided, you may use them to "
+    "inform your reasoning and cite them by number. "
+    'Respond with ONLY a JSON object, no markdown fences: '
+    '{"label": "real" or "fake", "confidence": number 0.0-1.0, '
+    '"reasoning": "one or two sentences on the patterns you observed", '
+    '"citation_ids": [list of reference numbers you actually used, may be empty]}'
 )
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -34,23 +37,46 @@ class LLMVerdictError(Exception):
     pass
 
 
-def get_llm_verdict(text: str, max_chars: int = 6000) -> dict:
-    """Returns {"label": "real"|"fake", "confidence": float, "reasoning": str}.
+def _format_references(passages: list[dict]) -> str:
+    lines = []
+    for i, p in enumerate(passages, start=1):
+        lines.append(f"[{i}] ({p['title']}) {p['snippet']}")
+    return "\n".join(lines)
 
-    Raises LLMVerdictError if Groq is unavailable, errors, or returns
-    something unparseable — callers should catch this and fall back to the
-    local TF-IDF model so the core Analyze feature never hard-depends on an
-    external API being configured and reachable.
+
+def get_llm_verdict(text: str, max_chars: int = 6000, media_context: str | None = None) -> dict:
+    """Returns {"label", "confidence", "reasoning", "citations"}.
+
+    Raises LLMVerdictError if Groq is unavailable/errors/returns garbage so
+    callers can fall back to the local TF-IDF model.
     """
     snippet = text[:max_chars]
+
+    passages: list[dict] = []
+    if settings.RAG_ENABLED:
+        try:
+            passages = retrieve(text[:2000])
+        except Exception:  # retrieval must never break the verdict
+            logger.exception("RAG retrieval failed; continuing without references")
+            passages = []
+
+    user_parts = []
+    if media_context:
+        user_parts.append(f"ANALYST NOTES ON THE SOURCE MEDIA:\n{media_context}\n")
+    if passages:
+        user_parts.append("REFERENCE NOTES (media-literacy guidance / prior fact-checks):\n"
+                          + _format_references(passages) + "\n")
+    user_parts.append(f"Assess this text:\n\n{snippet}")
+    user_content = "\n".join(user_parts)
+
     try:
         raw = chat_completion(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Assess this text:\n\n{snippet}"},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.1,
-            max_tokens=250,
+            max_tokens=350,
         )
     except GroqError as exc:
         raise LLMVerdictError(str(exc)) from exc
@@ -58,7 +84,6 @@ def get_llm_verdict(text: str, max_chars: int = 6000) -> dict:
     match = _JSON_BLOCK_RE.search(raw)
     if not match:
         raise LLMVerdictError(f"No JSON object found in LLM response: {raw[:200]!r}")
-
     try:
         data = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
@@ -67,13 +92,31 @@ def get_llm_verdict(text: str, max_chars: int = 6000) -> dict:
     label = str(data.get("label", "")).strip().lower()
     if label not in ("real", "fake"):
         raise LLMVerdictError(f"LLM returned an invalid label: {label!r}")
-
     try:
         confidence = float(data.get("confidence"))
     except (TypeError, ValueError):
         raise LLMVerdictError("LLM returned an invalid confidence value")
     confidence = max(0.0, min(1.0, confidence))
-
     reasoning = str(data.get("reasoning", "")).strip()
 
-    return {"label": label, "confidence": round(confidence, 4), "reasoning": reasoning}
+    used_ids = data.get("citation_ids") or []
+    citations = []
+    if isinstance(used_ids, list):
+        for n in used_ids:
+            try:
+                idx = int(n) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(passages):
+                citations.append(passages[idx])
+    # If the model cited nothing but retrieval was confident, still surface
+    # the top hit so the UI can show "grounded in:".
+    if not citations and passages:
+        citations = passages[:2]
+
+    return {
+        "label": label,
+        "confidence": round(confidence, 4),
+        "reasoning": reasoning,
+        "citations": citations,
+    }

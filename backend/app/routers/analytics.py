@@ -19,33 +19,40 @@ def summary(db: Session = Depends(get_db), user: User = Depends(get_current_user
     total = base.count()
     fake_count = base.filter(Prediction.label == "fake").count()
     real_count = base.filter(Prediction.label == "real").count()
-    avg_conf = db.query(func.avg(Prediction.confidence)).filter(Prediction.owner_id == user.id).scalar() or 0.0
+    avg_conf = (
+        db.query(func.avg(Prediction.confidence)).filter(Prediction.owner_id == user.id).scalar()
+        or 0.0
+    )
 
+    # Bucket the last 14 days by date in Python rather than SQL — it's a
+    # tiny result set (one user, <=14 days) and sidesteps the date-cast
+    # differences between SQLite and PostgreSQL entirely.
     since = datetime.datetime.utcnow() - datetime.timedelta(days=13)
-    daily_rows = (
-        db.query(
-            func.date(Prediction.created_at).label("day"),
-            Prediction.label,
-            func.count(Prediction.id),
-        )
+    recent = (
+        db.query(Prediction.created_at, Prediction.label)
         .filter(Prediction.owner_id == user.id, Prediction.created_at >= since)
-        .group_by("day", Prediction.label)
         .all()
     )
     by_day_map: dict[str, dict[str, int]] = {}
-    for day, label, count in daily_rows:
-        day_str = str(day)
-        by_day_map.setdefault(day_str, {"date": day_str, "fake": 0, "real": 0})
-        by_day_map[day_str][label] = count
+    for created_at, label in recent:
+        day_str = created_at.date().isoformat()
+        row = by_day_map.setdefault(day_str, {"date": day_str, "fake": 0, "real": 0})
+        if label in ("fake", "real"):
+            row[label] += 1
     by_day = sorted(by_day_map.values(), key=lambda r: r["date"])
 
-    mode_rows = (
+    by_mode = dict(
         db.query(Prediction.mode, func.count(Prediction.id))
         .filter(Prediction.owner_id == user.id)
         .group_by(Prediction.mode)
         .all()
     )
-    by_mode = {mode: count for mode, count in mode_rows}
+    by_modality = dict(
+        db.query(Prediction.source_type, func.count(Prediction.id))
+        .filter(Prediction.owner_id == user.id)
+        .group_by(Prediction.source_type)
+        .all()
+    )
 
     return AnalyticsSummary(
         total_predictions=total,
@@ -55,5 +62,6 @@ def summary(db: Session = Depends(get_db), user: User = Depends(get_current_user
         average_confidence=round(float(avg_conf), 4),
         by_day=by_day,
         by_mode=by_mode,
+        by_modality=by_modality,
         model_metrics=ModelBundle.metrics(),
     )

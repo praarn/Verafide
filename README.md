@@ -1,287 +1,200 @@
-# Verafide — Fake News Detection Desk
+# Verafide
 
-A full-stack web app that analyzes news text, articles, and CSV batches for
-credibility signals using machine learning, and presents the verdict through
-an editorial "verification desk" interface.
+**Multimodal misinformation analysis desk.** Paste text, a link, a
+screenshot, or an audio clip and Verafide scores its credibility — combining
+a locally-trained scikit-learn model, an LLM that reasons over the writing,
+and retrieval-augmented grounding in a media-literacy corpus and a
+fact-check index. It presents the verdict through an editorial
+"verification desk" interface.
 
-```
-fake-news-detection/
-├── backend/     FastAPI + SQLAlchemy + scikit-learn
-└── frontend/    React + Vite + Tailwind CSS v4 + Recharts
-```
+> Verdicts are model estimates, not fact-checks. Always confirm with primary
+> sources.
 
-## Features
+---
 
-- **Text & URL analysis** — paste an article or hand it a link; Verafide
-  fetches the article text itself and returns a verdict (real/fake) with a
-  confidence score. The verdict itself comes from an LLM (Groq/Llama 3.3
-  70B) that reasons about the actual writing — sourcing, tone, internal
-  consistency, sensationalism — rather than matching against a fixed
-  training vocabulary. If Groq isn't configured or is unavailable, this
-  automatically and silently falls back to the local TF-IDF model, so
-  Analyze never hard-depends on an external API. Signal words (the
-  specific words that drove the verdict) always come from the local model
-  regardless of which one produced the final label, since that
-  explainability feature is free/instant and doesn't need an LLM.
-- **Two model modes**
-  - `classic` — TF-IDF + Logistic Regression (fast, fully interpretable)
-  - `advanced` — TF-IDF + a multi-layer neural network (scikit-learn `MLPClassifier`)
-- **Explainability** — every verdict comes with the specific words in the
-  text that pushed the model toward "real" or "fake."
-- **Batch review** — upload a CSV of articles/headlines, or a PDF (each
-  page is analyzed as its own story — handy for a full newspaper-edition
-  PDF), and get every verdict back in one pass (up to 200 rows/pages per
-  file). Pages with normal embedded text are read directly. Two other
-  cases are handled automatically via OCR (Tesseract): scanned/image-only
-  pages, and — very common with Indian newspaper e-papers specifically —
-  pages built with custom embedded fonts whose text *encoding* is broken,
-  where the page displays as normal English visually but the underlying
-  extracted characters are garbage Unicode codepoints. Both cases are
-  detected (not just "is there text," but "is the text actually readable
-  letters") and routed through OCR, which reads the rendered pixels rather
-  than the broken text layer. OCR pages are processed **concurrently**
-  (thread pool sized to your CPU core count) rather than one at a time —
-  on a multi-core machine this cuts wall-clock time roughly proportional
-  to core count for documents needing OCR on many pages. A hard cap
-  (40 OCR pages per upload) bounds worst-case request time on very long
-  scanned documents. After every PDF upload you'll see an honest
-  extraction report — how many pages had real text, how many needed OCR,
-  and how many couldn't be read at all — instead of a silent partial
-  result. Batch Review deliberately uses the fast local model (not the
-  LLM-reasoned verdict) for individual row/page scoring — running an LLM
-  call per page would undo the concurrency work that keeps large PDFs
-  responsive. The whole-document summarizer/chatbot below the results
-  table still uses the LLM, since that's a single call regardless of how
-  many pages were uploaded.
-- **Accounts** — JWT-based auth; every user has their own private case
-  history.
-- **Case history** — every analysis is logged and can be reviewed or deleted.
-- **Analytics dashboard** — verdict split, a 14-day activity trend, and
-  live model performance metrics (accuracy/precision/recall/F1).
-- **AI summarizer + chatbot** — after any text/URL analysis, generate a
-  neutral summary or ask follow-up questions about the analyzed content,
-  powered by Groq's API (Llama 3.3 70B by default). Requires your own free
-  Groq API key — see setup below.
-- **Attractive, distinctive UI** — a newsroom-forensics visual identity
-  (ink/paper palette, Fraunces + Inter + IBM Plex Mono type system, an
-  animated "verdict stamp" as the signature interaction).
+## About
 
-## ⚠️ About the bundled model — read this first
+Verafide is a portfolio-grade full-stack project built to exercise a modern
+production stack end to end:
 
-The models are trained on a **blend of four sources** totaling ~13,300
-balanced rows across 13 topic buckets (politics, world, business, sci/tech,
-sports, health, finance, entertainment, environment, and general/satire):
-
-| Source | What it contributes |
+| Layer | Technology |
 |---|---|
-| `train_data_synthetic.csv` | Template-generated clickbait-vs-measured-prose pairs across 8 topics (built by `scripts/generate_dataset.py`) |
-| `train_data_real.csv` | 6,335 real 2016-era political news articles, real vs. fabricated ([lutzhamel/fake-news](https://github.com/lutzhamel/fake-news), the McIntire dataset) |
-| `train_data_agnews.csv` | Genuine published news blurbs across World/Sports/Business/Sci-Tech ([AG News](https://github.com/mhjabreel/CharCnn_Keras)) — real-only, added purely for topic/length diversity |
-| `train_data_onion.csv` | Satirical vs. genuine headlines across almost every topic ([Onion-or-Not](https://github.com/lukefeilberg/onion)) |
+| **Frontend** | Next.js 15 (App Router) · TypeScript · Tailwind CSS v4 |
+| **Backend** | Python · FastAPI · Pydantic v2 · REST + WebSockets |
+| **Database** | PostgreSQL · SQLAlchemy · Alembic migrations |
+| **AI / Data** | scikit-learn · pandas · NumPy · Groq LLM API · RAG (TF-IDF retriever) · Whisper STT · vision LLM |
+| **Auth** | JWT access + refresh tokens (rotating, revocable) |
+| **Infra** | Docker · Docker Compose · GitHub Actions |
+| **Testing** | pytest · FastAPI `TestClient` (incl. WebSocket) |
 
-**Why bother mixing four sources?** Trained on the political dataset alone,
-the model hit 95% held-out accuracy — but that number was inflated: it had
-learned "real == 2016-election vocabulary" rather than general credibility
-signals, and failed on anything else (tech news, Fed announcements, literary
-quotes). After broadening the training mix, held-out accuracy is a more
-honest **~86%**, and it now correctly handles real news about the Fed,
-Apple security patches, sports, etc. — content the narrower model got wrong.
-This is a real, general lesson for this kind of project: a higher accuracy
-number on one narrow dataset is often *worse*, not better.
-
-**Before shipping this for real use**, consider adding: more non-English
-sources, more recent real-world fake news examples (each dataset above
-predates ~2018), and a genuine transformer model rather than TF-IDF —
-bag-of-words models fundamentally can't reason about a claim's factual
-content, only its lexical style.
-
-To regenerate everything from scratch:
-```bash
-cd backend
-python scripts/generate_dataset.py       # rebuilds the synthetic slice
-# re-download the three real-world CSVs (see the docstring at the top of
-# each build_*.py script for the curl command) into data/, then:
-python scripts/build_real_dataset.py
-python scripts/build_agnews_dataset.py
-python scripts/build_onion_dataset.py
-python scripts/combine_datasets.py       # merges + balances into train_data.csv
-python scripts/train_models.py           # retrains both models
-```
-
-Similarly, the "advanced" mode is a real, from-scratch-trained neural
-network — **not** a pretrained transformer like BERT (this build
-environment has no access to download pretrained model weights). The
-inference code in `backend/app/ml/inference.py` is written so you can drop
-in a `transformers` pipeline as a third mode later without restructuring
-the API.
-
-## Running the project
-
-Pick your OS below and run its commands **in order, top to bottom**. You'll
-end up with two terminals running at once — one for the backend, one for
-the frontend.
+It is deliberately **not** a microservice sprawl: two services (plus
+Postgres), one compose file, no Kubernetes.
 
 ---
 
-### Windows (PowerShell)
+## What it does
 
-**1. Backend**
-```powershell
-cd backend
-py -3.12 -m venv venv
-.\venv\Scripts\Activate.ps1
-python --version                 # confirm this prints Python 3.12.x
-pip install -r requirements.txt
-copy .env.example .env
-# open .env and paste your GROQ_API_KEY (get a free one at https://console.groq.com/keys) — optional but recommended
-uvicorn app.main:app --reload --port 8000
-```
-Leave this terminal running. API docs: http://localhost:8000/docs
+### Four input modalities, one verdict pipeline
+| Modality | How it's handled |
+|---|---|
+| **Text** | Cleaned → TF-IDF → local classifier, then an LLM re-reasons over the raw writing. |
+| **URL** | Article text is fetched and extracted server-side, then analyzed as text. Known domains also get an advisory source-reputation tier. |
+| **Image** | A vision LLM transcribes the text and notes manipulation cues; **falls back to local Tesseract OCR** if the API key has no vision access. |
+| **Audio** | Transcribed with Groq Whisper, then analyzed as text. |
 
-**2. OCR, for scanned PDFs in Batch Review (optional)**
-```powershell
-# Download + run the installer: https://github.com/UB-Mannheim/tesseract/wiki
-# Then either add the install folder to PATH, or add this line to backend\.env:
-# TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-```
+### RAG-grounded reasoning
+Every LLM verdict and every chatbot answer retrieves from a unified index:
 
-**3. Frontend** (open a **new** PowerShell window)
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-App: http://localhost:5173
+- **~14 curated media-literacy notes** (`backend/app/rag/corpus/*.md`) —
+  sensationalism, sourcing standards, logical fallacies, satire markers,
+  propaganda techniques, deepfake tells, and more.
+- **An ingestible fact-check dataset** (`backend/data/fact_checks.csv`, seeded
+  with ~25 well-documented debunked claims; drop in your own CSV to expand).
 
----
+Retrieval is a scikit-learn **TF-IDF + cosine-similarity** index — offline,
+fast, and inside the stack. Retrieved passages are shown to the user as
+citations.
 
-### macOS
+### Live batch review over WebSockets
+Upload a CSV or a full newspaper PDF. A background job classifies each
+row/page and streams `processed / total` progress over a WebSocket
+(`/api/batch/jobs/{id}/ws`); the client falls back to HTTP polling if the
+socket can't be established. Scanned or broken-encoding PDF pages are routed
+through OCR, concurrently.
 
-**1. Backend**
-```bash
-cd backend
-python3.12 -m venv venv
-source venv/bin/activate
-python --version                 # confirm this prints Python 3.12.x
-pip install -r requirements.txt
-cp .env.example .env
-# open .env and paste your GROQ_API_KEY (get a free one at https://console.groq.com/keys) — optional but recommended
-uvicorn app.main:app --reload --port 8000
-```
-Leave this terminal running. API docs: http://localhost:8000/docs
-
-**2. OCR, for scanned PDFs in Batch Review (optional)**
-```bash
-brew install tesseract
-```
-
-**3. Frontend** (open a **new** terminal tab/window)
-```bash
-cd frontend
-npm install
-npm run dev
-```
-App: http://localhost:5173
+### The rest
+- **Explainability** — the specific words that pushed the local model toward
+  real/fake, on every verdict.
+- **Confidence banding** — `high` / `moderate` / `low`, with the UI softening
+  "FLAGGED" to "LEANS FLAGGED" in the low band.
+- **Auth** — register / login issue an access token (30 min) + a rotating
+  refresh token (14 days) stored hashed; reuse of a consumed refresh token
+  revokes the whole session family.
+- **Case history & analytics** — every analysis is logged; the dashboard
+  charts verdict split, a 14-day trend, input-type breakdown, RAG index
+  status, and live model metrics.
+- **AI summarizer + chatbot** — neutral summary or grounded Q&A over any
+  analyzed content.
+- **Ops** — per-client rate limiting, request-id correlation + structured
+  logs, a consistent error envelope, and a readiness `/api/health`.
 
 ---
 
-### Linux (Debian/Ubuntu-based)
+## Architecture
 
-**1. Backend**
+```
+                 ┌───────────────────────────┐
+  browser ─────▶ │  Next.js 15 (TS, :3000)   │
+                 │  /api/* → proxy to API    │
+                 │  ws://host:8000 for batch │
+                 └───────────┬───────────────┘
+                             │ REST + WS
+                 ┌───────────▼───────────────┐        ┌──────────────┐
+                 │  FastAPI (:8000)          │───────▶│ PostgreSQL   │
+                 │  routers/ · middleware    │  ORM   │ (SQLAlchemy) │
+                 │  ┌─────────────────────┐  │        └──────────────┘
+                 │  │ ml/  inference      │  │
+                 │  │      llm_verdict ───┼──┼──▶ Groq API (chat / vision / whisper)
+                 │  │      media (OCR)    │  │
+                 │  │ rag/ retriever ─────┼──┼──▶ TF-IDF index (corpus + fact_checks.csv)
+                 │  │ jobs (batch + WS)   │  │
+                 │  └─────────────────────┘  │
+                 └───────────────────────────┘
+```
+
+More detail: [`ARCHITECTURE.md`](ARCHITECTURE.md) and the topic docs in
+[`docs/`](docs/) (`auth.md`, `rag.md`, `multimodal.md`, `websockets.md`,
+`deployment.md`). Component-level notes live in `EXPLANATION.md` files under
+`backend/app/`, `backend/app/ml/`, `backend/app/rag/`, `backend/tests/`, and
+`frontend/src/`.
+
+---
+
+## Quick start (Docker — nothing else to install)
+
+```bash
+git clone https://github.com/praarn/Verafide.git
+cd Verafide
+cp backend/.env.example backend/.env   # optional: add GROQ_API_KEY for LLM features
+SECRET_KEY=$(openssl rand -hex 32) GROQ_API_KEY=your_key docker compose up --build
+```
+
+- Web: http://localhost:3000
+- API docs: http://localhost:8000/docs
+
+Without a `GROQ_API_KEY` everything still works — the verdict falls back to
+the local scikit-learn model, and image analysis uses local OCR.
+
+## Local development
+
+### Backend
+
 ```bash
 cd backend
-python3.12 -m venv venv
-source venv/bin/activate
-python --version                 # confirm this prints Python 3.12.x
-pip install -r requirements.txt
-cp .env.example .env
-# open .env and paste your GROQ_API_KEY (get a free one at https://console.groq.com/keys) — optional but recommended
+python3.12 -m venv venv && . venv/bin/activate        # Windows: venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+cp .env.example .env                                   # defaults to SQLite for local dev
+python scripts/train_models.py                         # build ML artifacts (gitignored)
+python scripts/build_rag_index.py                      # build the RAG index (gitignored)
 uvicorn app.main:app --reload --port 8000
 ```
-Leave this terminal running. API docs: http://localhost:8000/docs
 
-**2. OCR, for scanned PDFs in Batch Review (optional)**
-```bash
-sudo apt update && sudo apt install -y tesseract-ocr
-```
+For Postgres locally: set `DATABASE_URL=postgresql+psycopg://…` in `.env`,
+then `alembic upgrade head` instead of relying on `DB_CREATE_ALL`.
 
-**3. Frontend** (open a **new** terminal tab/window)
+### Frontend
+
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev            # http://localhost:3000, proxies /api to :8000
 ```
-App: http://localhost:5173
 
----
-
-### Any OS — Docker (single command, no local Python/Node install needed)
+### Handy targets
 
 ```bash
-docker compose up --build
+make help          # list everything
+make test          # backend pytest
+make lint          # ruff + eslint
+make typecheck     # tsc --noEmit
+make migrate       # alembic upgrade head
 ```
-- Frontend: http://localhost
-- Backend: http://localhost:8000
 
-Set a real secret before deploying anywhere public:
+## The bundled ML model — read this
+
+The classifier is trained on a **blend of four sources** (~13,300 balanced
+rows across 13 topic buckets): a synthetic clickbait/measured-prose set, the
+McIntire political real-vs-fake set, AG News (real-only, for topic
+diversity), and Onion-or-Not (satire). Held-out accuracy is a deliberately
+honest **~86%** — training on the political set alone gave an inflated 95%
+that failed on everything else.
+
+A bag-of-words model fundamentally cannot reason about a claim's factual
+content, only its lexical style. That is exactly why Verafide layers an LLM
+verdict and RAG grounding on top, and why `backend/app/ml/inference.py` is
+structured to accept a transformer as a third mode.
+
+Retrain: `python scripts/train_models.py` (needs `data/train_data.csv`,
+which is committed). Regenerate the whole dataset: see
+[`docs/dataset.md`](docs/dataset.md).
+
+## Testing
+
 ```bash
-# macOS / Linux
-SECRET_KEY=$(openssl rand -hex 32) docker compose up --build
-```
-```powershell
-# Windows PowerShell
-$env:SECRET_KEY = -join ((48..57 + 97..102) | Get-Random -Count 32 | ForEach-Object {[char]$_})
-docker compose up --build
+cd backend && pytest        # 50 tests, SQLite, no network (Groq mocked / disabled)
 ```
 
----
-
-### Optional: retrain the ML models from scratch
-
-The zip already ships with trained model artifacts — skip this unless you
-specifically want to rebuild them (same commands on every OS, run inside
-the activated backend venv):
-
-```bash
-cd backend
-python scripts/generate_dataset.py
-# download the 3 real-world CSVs — curl commands are in each build_*.py docstring
-python scripts/build_real_dataset.py
-python scripts/build_agnews_dataset.py
-python scripts/build_onion_dataset.py
-python scripts/combine_datasets.py
-python scripts/train_models.py
-# then restart uvicorn so it loads the newly trained artifacts
-```
-
-## Tech stack
-
-| Layer      | Choice |
-|------------|--------|
-| Backend    | FastAPI, SQLAlchemy, Pydantic v2, python-jose (JWT), passlib (bcrypt) |
-| ML         | scikit-learn (TF-IDF, Logistic Regression, MLPClassifier), pandas |
-| Scraping   | requests + BeautifulSoup4 |
-| PDF/OCR    | pypdf, PyMuPDF (page rasterization), Tesseract via pytesseract |
-| Database   | SQLite by default (swap `DATABASE_URL` for Postgres/MySQL in production) |
-| Frontend   | React 19, Vite, Tailwind CSS v4, React Router, Recharts, Axios, lucide-react |
+Covers auth + refresh rotation + reuse detection, all four predict
+modalities, the batch job lifecycle **and its WebSocket**, RAG retrieval,
+rate limiting, and the analytics shape. CI additionally applies the Alembic
+migrations against a real PostgreSQL service container.
 
 ## Production notes
 
-- Swap SQLite for Postgres by changing `DATABASE_URL` (e.g.
-  `postgresql://user:pass@host:5432/db`) — SQLAlchemy handles the rest.
-- Put a real secret in `SECRET_KEY` and don't commit `.env`.
-- The batch endpoint caps at 200 rows/request by design
-  (`app/config.py: MAX_BATCH_ROWS`) — raise it if you add background/queued
-  processing for larger files.
-- CORS origins are configurable via `CORS_ORIGINS` in `.env`.
-
-## Ideas for what to add next
-
-- Real transformer model (DistilBERT) as a third analysis mode
-- Rate limiting / per-user API quotas
-- Team/workspace sharing of case history
-- Export batch results as CSV/PDF
-- Source-credibility lookup (cross-reference the domain) alongside the text model
-
-Got suggestions or a different direction you'd like this pushed in? Let me
-know and I'm happy to extend any part of this.
+- Set a real `SECRET_KEY`; startup logs an error in `ENV=production` if it's
+  ephemeral.
+- The rate limiter is in-memory / per-process — front multi-replica
+  deployments with a gateway or shared store and set `RATE_LIMIT_ENABLED=false`.
+- `DB_CREATE_ALL=false` in containers; the entrypoint runs `alembic upgrade head`.
+- Groq rotates its hosted model catalogue — if `GROQ_MODEL` starts 404-ing,
+  pick a current one from https://console.groq.com/docs/models.

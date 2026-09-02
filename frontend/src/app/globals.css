@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
+  --font-body: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --color-ink: #12151c;
+  --color-ink-soft: #1a1e28;
+  --color-paper: #f6f3ec;
+  --color-paper-dim: #eae5d8;
+  --color-verified: #2f8163;
+  --color-verified-soft: #16241f;
+  --color-flagged: #cf5050;
+  --color-flagged-soft: #2a1a1c;
+  --color-signal: #d3a24a;
+  --color-slate: #8891a0;
+  --color-line: #262b36;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background-color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-signal);
+  color: var(--color-ink);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.rule {
+  border-top: 1px solid var(--color-line);
+}
+
+.card {
+  border: 1px solid var(--color-line);
+  background-color: var(--color-ink-soft);
+  border-radius: 0.75rem;
+}
+
+.bg-grain {
+  position: relative;
+  isolation: isolate;
+}
+.bg-grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  border-radius: inherit;
+}
+
+@keyframes stamp-thud {
+  0% { opacity: 0; transform: translateY(-14px) scale(1.4) rotate(-14deg); }
+  60% { opacity: 1; transform: translateY(2px) scale(0.96) rotate(-8deg); }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(-8deg); }
+}
+.verdict-stamp { animation: stamp-thud 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-ink-soft);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verdict-stamp,
+  .skeleton::after {
+    animation: none;
+  }
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 4px; }

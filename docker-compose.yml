@@ -1,28 +1,56 @@
-version: "3.9"
-
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: verafide-db
+    environment:
+      POSTGRES_USER: verafide
+      POSTGRES_PASSWORD: verafide
+      POSTGRES_DB: verafide
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verafide -d verafide"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build: ./backend
     container_name: verafide-backend
     ports:
       - "8000:8000"
     environment:
-      - SECRET_KEY=${SECRET_KEY:-change-this-to-a-long-random-string}
-      - ACCESS_TOKEN_EXPIRE_MINUTES=10080
-      - DATABASE_URL=sqlite:///./app.db
-      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost
-    volumes:
-      - backend_data:/app/data_store
+      ENV: production
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-a-long-random-string}
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      REFRESH_TOKEN_EXPIRE_DAYS: 14
+      DATABASE_URL: postgresql+psycopg://verafide:verafide@db:5432/verafide
+      DB_CREATE_ALL: "false"
+      CORS_ORIGINS: http://localhost:3000,http://localhost
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-qwen/qwen3.8-27b}
+      RAG_ENABLED: "true"
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
     build: ./frontend
     container_name: verafide-frontend
     ports:
-      - "80:80"
+      - "3000:3000"
+    environment:
+      # Server-side proxy target for /api/* (see frontend/next.config.ts).
+      # The browser talks to the Next server on :3000, which proxies here.
+      # Batch-progress WebSockets connect straight to ws://<host>:8000
+      # (computed client-side; override at build time with NEXT_PUBLIC_WS_ORIGIN).
+      BACKEND_ORIGIN: http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  backend_data:
+  db_data:

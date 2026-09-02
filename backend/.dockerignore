@@ -1,0 +1,18 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+app.db
+*.sqlite
+*.sqlite3
+_test_boot.db
+_smoke.db
+.env
+.git/
+README.md
+EXPLANATION.md
+app/ml/artifacts/*.joblib
+app/rag/artifacts/*.joblib
+# NOTE: do not ignore *.md globally — app/rag/corpus/*.md is required data.

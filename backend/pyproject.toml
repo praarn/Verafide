@@ -1,0 +1,28 @@
+# Tooling config for the backend. Runtime deps stay in requirements.txt;
+# dev-only tools (ruff, pytest, httpx) are in requirements-dev.txt.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["app/ml/artifacts", "app/rag/artifacts", "data", "alembic/versions"]
+
+[tool.ruff.lint]
+# E/F: pyflakes+pycodestyle, I: import sorting, B: bugbear, C4: comprehensions.
+# Kept modest so it flags real problems (dead imports, undefined names,
+# shadowing) rather than churning the codebase's existing, consistent style.
+select = ["E", "F", "I", "B", "C4"]
+ignore = [
+    "E501",   # line length is handled by the formatter, not worth failing CI over
+    "B008",   # FastAPI's Depends() in a default arg is the framework's intended idiom
+    "B904",   # `raise HTTPException(...) from exc` — noise for user-facing error mapping
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
