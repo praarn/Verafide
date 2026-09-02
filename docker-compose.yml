@@ -37,15 +37,19 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Baked into the built /api/* rewrite — the browser hits :3000 and
+        # the Next server proxies to the backend container.
+        BACKEND_ORIGIN: http://backend:8000
+        # Browser-side WebSocket target for batch progress. localhost works
+        # when the stack runs on the user's machine; override for a remote host.
+        NEXT_PUBLIC_WS_ORIGIN: ws://localhost:8000
     container_name: verafide-frontend
     ports:
       - "3000:3000"
     environment:
-      # Server-side proxy target for /api/* (see frontend/next.config.ts).
-      # The browser talks to the Next server on :3000, which proxies here.
-      # Batch-progress WebSockets connect straight to ws://<host>:8000
-      # (computed client-side; override at build time with NEXT_PUBLIC_WS_ORIGIN).
       BACKEND_ORIGIN: http://backend:8000
     depends_on:
       backend:

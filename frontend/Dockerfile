@@ -9,7 +9,12 @@ FROM node:20-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Baked into the client bundle; the browser needs to reach the API host.
+# next.config.ts bakes the /api/* rewrite target into the build output, so
+# the backend origin must be known here, not just at runtime.
+ARG BACKEND_ORIGIN=http://localhost:8000
+ARG NEXT_PUBLIC_WS_ORIGIN
+ENV BACKEND_ORIGIN=$BACKEND_ORIGIN
+ENV NEXT_PUBLIC_WS_ORIGIN=$NEXT_PUBLIC_WS_ORIGIN
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
